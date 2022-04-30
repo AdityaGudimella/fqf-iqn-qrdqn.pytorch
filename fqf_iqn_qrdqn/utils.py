@@ -1,3 +1,4 @@
+import os
 from collections import deque
 import numpy as np
 import torch
@@ -103,3 +104,11 @@ class LinearAnneaer:
     def get(self):
         assert 0 < self.steps <= self.num_steps
         return self.a * self.steps + self.b
+
+
+def set_morl(enable: bool = True) -> None:
+    os.environ['MORL_ENABLE'] = str(enable).lower()
+
+
+def use_morl() -> bool:
+    return os.environ.get('MORL_ENABLE', 'false') == 'true'

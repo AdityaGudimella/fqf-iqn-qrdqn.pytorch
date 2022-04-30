@@ -3,10 +3,13 @@ import os
 import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
+import tqdm
 
 from fqf_iqn_qrdqn.memory import LazyMultiStepMemory, \
     LazyPrioritizedMultiStepMemory
-from fqf_iqn_qrdqn.utils import RunningMeanStats, LinearAnneaer
+from fqf_iqn_qrdqn.utils import RunningMeanStats, LinearAnneaer, use_morl
+
+from morl import api, core, memories, external_utils as extu
 
 
 class BaseAgent(ABC):
@@ -18,15 +21,23 @@ class BaseAgent(ABC):
                  epsilon_decay_steps=250000, double_q_learning=False,
                  dueling_net=False, noisy_net=False, use_per=False,
                  log_interval=100, eval_interval=250000, num_eval_steps=125000,
-                 max_episode_steps=27000, grad_cliping=5.0, cuda=True, seed=0):
+                 max_episode_steps=27000, grad_cliping=5.0, cuda=True, seed=0, morl_env=None):
 
         self.env = env
         self.test_env = test_env
+        if use_morl():
+            self.morl_env: api.MorlEnv = morl_env
+            self.morl_env_spec = self.morl_env.get_partial_spec()
+            core.set_default_torch_device("cuda")
+            self.max_episode_steps = 108_000
 
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-        self.env.seed(seed)
-        self.test_env.seed(2**31-1-seed)
+        if use_morl():
+            extu.manual_seed_morl(seed)
+        else:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            self.env.seed(seed)
+            self.test_env.seed(2**31-1-seed)
         # torch.backends.cudnn.deterministic = True  # It harms a performance.
         # torch.backends.cudnn.benchmark = False  # It harms a performance.
 
@@ -46,6 +57,26 @@ class BaseAgent(ABC):
             self.memory = LazyMultiStepMemory(
                 memory_size, self.env.observation_space.shape,
                 self.device, gamma, multi_step)
+
+        if use_morl():
+            if use_per:
+                self.morl_memory = memories.PrioNStepAtariExperienceReplay(
+                    batch_size=32,
+                    capacity=memory_size,
+                    frame_stack=4,
+                    state_height=84,
+                    state_width=84,
+                    n=multi_step,
+                )
+            else:
+                self.morl_memory = memories.AtariExperienceReplay(
+                    batch_size=32,
+                    capacity=memory_size,
+                    frame_stack=4,
+                    state_height=84,
+                    state_width=84,
+                    n_steps=multi_step,
+                )
 
         self.log_dir = log_dir
         self.model_dir = os.path.join(log_dir, 'model')
@@ -110,16 +141,23 @@ class BaseAgent(ABC):
 
     def explore(self):
         # Act with randomness.
-        action = self.env.action_space.sample()
-        return action
+        if use_morl():
+            return self.morl_env_spec.sample_actions()
+        return self.env.action_space.sample()
 
     def exploit(self, state):
         # Act without randomness.
-        state = torch.ByteTensor(
-            state).unsqueeze(0).to(self.device).float() / 255.
+        if use_morl():
+            state = torch.as_tensor(state, dtype=torch.float32, device=self.device) / 255
+        else:
+            state = torch.ByteTensor(
+                state
+            ).unsqueeze(0).to(self.device).float() / 255.
         with torch.no_grad():
-            action = self.online_net.calculate_q(states=state).argmax().item()
-        return action
+            action = self.online_net.calculate_q(states=state).argmax()
+        if use_morl():
+            return action.view(-1, 1).cpu().numpy()
+        return action.item()
 
     @abstractmethod
     def learn(self):
@@ -150,7 +188,10 @@ class BaseAgent(ABC):
         episode_steps = 0
 
         done = False
-        state = self.env.reset()
+        if use_morl():
+            state = self.morl_env.get_states_()
+        else:
+            state = self.env.reset()
 
         while (not done) and episode_steps <= self.max_episode_steps:
             # NOTE: Noises can be sampled only after self.learn(). However, I
@@ -160,13 +201,22 @@ class BaseAgent(ABC):
 
             if self.is_random(eval=False):
                 action = self.explore()
+            elif use_morl():
+                action = self.exploit(self.morl_env.get_states_())
             else:
                 action = self.exploit(state)
 
-            next_state, reward, done, _ = self.env.step(action)
+            if use_morl():
+                exp_ = self.morl_env.step_(action)
+                next_state, reward, done = exp_.next_states.squeeze(), exp_.rewards.item(), exp_.dones.item()
+            else:
+                next_state, reward, done, _ = self.env.step(action)
 
             # To calculate efficiently, I just set priority=max_priority here.
-            self.memory.append(state, action, reward, next_state, done)
+            if use_morl():
+                self.morl_memory.add_(exp_)
+            else:
+                self.memory.append(state, action, reward, next_state, done)
 
             self.steps += 1
             episode_steps += 1
@@ -206,7 +256,7 @@ class BaseAgent(ABC):
         num_episodes = 0
         num_steps = 0
         total_return = 0.0
-
+        pbar = tqdm.tqdm(total=self.num_eval_steps)
         while True:
             state = self.test_env.reset()
             episode_steps = 0
@@ -214,20 +264,25 @@ class BaseAgent(ABC):
             done = False
             while (not done) and episode_steps <= self.max_episode_steps:
                 if self.is_random(eval=True):
-                    action = self.explore()
+                    action = self.explore().item()
                 else:
-                    action = self.exploit(state)
+                    if use_morl():
+                        state = state[None, ...]
+                    action = self.exploit(state).item()
 
                 next_state, reward, done, _ = self.test_env.step(action)
                 num_steps += 1
+                pbar.update()
                 episode_steps += 1
                 episode_return += reward
                 state = next_state
 
             num_episodes += 1
             total_return += episode_return
+            pbar.set_description(f"Eval: {total_return/num_episodes:<5.1f}")
 
             if num_steps > self.num_eval_steps:
+                pbar.close()
                 break
 
         mean_return = total_return / num_episodes

@@ -2,7 +2,7 @@ import torch
 from torch.optim import Adam
 
 from fqf_iqn_qrdqn.model import QRDQN
-from fqf_iqn_qrdqn.utils import calculate_quantile_huber_loss, disable_gradients, evaluate_quantile_at_action, update_params
+from fqf_iqn_qrdqn.utils import calculate_quantile_huber_loss, disable_gradients, evaluate_quantile_at_action, update_params, use_morl
 
 from .base_agent import BaseAgent
 
@@ -18,14 +18,14 @@ class QRDQNAgent(BaseAgent):
                  dueling_net=False, noisy_net=False, use_per=False,
                  log_interval=100, eval_interval=250000, num_eval_steps=125000,
                  max_episode_steps=27000, grad_cliping=None, cuda=True,
-                 seed=0):
+                 seed=0, morl_env=None):
         super(QRDQNAgent, self).__init__(
             env, test_env, log_dir, num_steps, batch_size, memory_size,
             gamma, multi_step, update_interval, target_update_interval,
             start_steps, epsilon_train, epsilon_eval, epsilon_decay_steps,
             double_q_learning, dueling_net, noisy_net, use_per, log_interval,
             eval_interval, num_eval_steps, max_episode_steps, grad_cliping,
-            cuda, seed)
+            cuda, seed, morl_env=morl_env)
 
         # Online network.
         self.online_net = QRDQN(
@@ -59,8 +59,18 @@ class QRDQNAgent(BaseAgent):
         self.learning_steps += 1
         self.online_net.sample_noise()
         self.target_net.sample_noise()
-
-        if self.use_per:
+        if use_morl():
+            tensor_exp = self.morl_memory.get_().as_default_tensor()
+            states, actions, rewards, next_states, dones = (
+                tensor_exp.states, tensor_exp.actions, tensor_exp.rewards, tensor_exp.next_states, tensor_exp.dones
+            )
+            states = states.float() / 255
+            next_states = next_states.float() / 255
+            actions = actions.long()
+            dones = dones.float()
+            weights = getattr(tensor_exp, "weights", None)
+            indices = getattr(tensor_exp, "indices", None)
+        elif self.use_per:
             (states, actions, rewards, next_states, dones), weights =\
                 self.memory.sample(self.batch_size)
         else:
@@ -78,7 +88,10 @@ class QRDQNAgent(BaseAgent):
             retain_graph=False, grad_cliping=self.grad_cliping)
 
         if self.use_per:
-            self.memory.update_priority(errors)
+            if use_morl():
+                self.morl_memory.update_priorities_(indices, errors)
+            else:
+                self.memory.update_priority(errors)
 
         if 4*self.steps % self.log_interval == 0:
             self.writer.add_scalar(
