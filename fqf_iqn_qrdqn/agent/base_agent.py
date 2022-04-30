@@ -29,10 +29,12 @@ class BaseAgent(ABC):
             self.morl_env: api.MorlEnv = morl_env
             self.morl_env_spec = self.morl_env.get_partial_spec()
             core.set_default_torch_device("cuda")
-            self.max_episode_steps = 108_000
+            # self.max_episode_steps = 108_000
 
         if use_morl():
             extu.manual_seed_morl(seed)
+            self.env.seed(seed)
+            self.test_env.seed(seed)
         else:
             torch.manual_seed(seed)
             np.random.seed(seed)
