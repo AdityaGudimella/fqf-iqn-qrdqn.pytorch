@@ -26,12 +26,12 @@ def run(args):
     log_dir = os.path.join(
         'logs', args.env_id, f'{name}-seed{args.seed}-{time}')
 
-    # morl_env = envs.EnvPool.make_ale_env(
-    #     game="Pong",
-    #     n_envs=1,
-    #     base_seed=args.seed,
-    # )
-    morl_env = envs.GymEnv(env)
+    morl_env = envs.EnvPool.make_ale_env(
+        game="Pong",
+        n_envs=1,
+        base_seed=args.seed,
+    )
+    # morl_env = envs.GymEnv(env)
 
     # Create the agent and run.
     agent = QRDQNAgent(
