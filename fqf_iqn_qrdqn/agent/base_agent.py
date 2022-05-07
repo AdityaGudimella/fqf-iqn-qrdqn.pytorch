@@ -8,7 +8,7 @@ import tqdm
 from fqf_iqn_qrdqn.memory import LazyMultiStepMemory, LazyPrioritizedMultiStepMemory
 from fqf_iqn_qrdqn.utils import RunningMeanStats, LinearAnneaer, use_morl
 
-from morl import api, core, memories, external_utils as extu
+from morl import api, core, memories, external_utils as extu, learners, models
 
 
 class BaseAgent(ABC):
@@ -81,9 +81,21 @@ class BaseAgent(ABC):
                     n=multi_step,
                 )
             else:
-                self.morl_memory = memories.ExperienceReplay.with_circular_buffer_and_random_data_sampler(
-                    capacity=memory_size, batch_size=32
+                self.morl_memory = memories.ExperienceReplay.with_compact_circular_buffer(
+                    capacity=memory_size, batch_size=32, frame_stack=4,
                 )
+            self.morl_learner = learners.QRDQNLearner(
+                model=models.QRDQN.nature_dqn(
+                    state_channels=4,
+                    state_height=84,
+                    state_width=84,
+                    n_actions=6,
+                    n_quantiles=200,
+                    normalize_pixels=False,
+                ),
+                memory=self.morl_memory,
+                update_freq=4,
+            )
         else:
             if use_per:
                 beta_steps = (num_steps - start_steps) / update_interval
@@ -148,6 +160,8 @@ class BaseAgent(ABC):
                 break
 
     def is_update(self):
+        # if use_morl():
+        #     return True
         return self.steps % self.update_interval == 0 and self.steps >= self.start_steps
 
     def is_random(self, eval=False):
@@ -178,7 +192,10 @@ class BaseAgent(ABC):
         else:
             state = torch.ByteTensor(state).unsqueeze(0).to(self.device).float() / 255.0
         with torch.no_grad():
-            action = self.online_net.calculate_q(states=state).argmax()
+            if use_morl():
+                action = self.online_net(states=state).outputs.argmax()
+            else:
+                action = self.online_net.calculate_q(states=state).argmax()
         if use_morl():
             return action.view(-1, 1).cpu().numpy()
         return action.item()
@@ -223,7 +240,10 @@ class BaseAgent(ABC):
             # NOTE: Noises can be sampled only after self.learn(). However, I
             # sample noises before every action, which seems to lead better
             # performances.
-            self.online_net.sample_noise()
+            if use_morl():
+                extu.reset_noise(self.online_net)
+            else:
+                self.online_net.sample_noise()
 
             if self.is_random(eval=False):
                 action = self.explore()

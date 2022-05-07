@@ -6,6 +6,8 @@ from fqf_iqn_qrdqn.utils import calculate_quantile_huber_loss, disable_gradients
 
 from .base_agent import BaseAgent
 
+from morl import external_utils as extu
+
 
 class QRDQNAgent(BaseAgent):
 
@@ -37,11 +39,14 @@ class QRDQNAgent(BaseAgent):
             num_channels=env.observation_space.shape[0],
             num_actions=self.num_actions, N=N, dueling_net=dueling_net,
             noisy_net=noisy_net).to(self.device).to(self.device)
-
-        # Copy parameters of the learning network to the target network.
-        self.update_target()
-        # Disable calculations of gradients of the target network.
-        disable_gradients(self.target_net)
+        if use_morl():
+            self.online_net = self.morl_learner.model
+            self.target_net = self.morl_learner.target_model
+        else:
+            # Copy parameters of the learning network to the target network.
+            self.update_target()
+            # Disable calculations of gradients of the target network.
+            disable_gradients(self.target_net)
 
         self.optim = Adam(
             self.online_net.parameters(),
@@ -56,9 +61,17 @@ class QRDQNAgent(BaseAgent):
         self.kappa = kappa
 
     def learn(self):
+        # if use_morl():
+        #     # tensor_exp = self.morl_memory.get_().as_default_tensor()
+        #     self.morl_learner.learn_()
+        #     return
         self.learning_steps += 1
-        self.online_net.sample_noise()
-        self.target_net.sample_noise()
+        if use_morl():
+            extu.reset_noise(self.online_net)
+            extu.reset_noise(self.target_net)
+        else:
+            self.online_net.sample_noise()
+            self.target_net.sample_noise()
         if use_morl():
             tensor_exp = self.morl_memory.get_().as_default_tensor()
             states, actions, rewards, next_states, dones = (
@@ -103,9 +116,14 @@ class QRDQNAgent(BaseAgent):
                        weights):
 
         # Calculate quantile values of current states and actions at taus.
-        current_sa_quantiles = evaluate_quantile_at_action(
-            self.online_net(states=states),
-            actions)
+        if use_morl():
+            current_sa_quantiles = evaluate_quantile_at_action(
+                self.online_net(states=states).quantiles,
+                actions)
+        else:
+            current_sa_quantiles = evaluate_quantile_at_action(
+                self.online_net(states=states),
+                actions)
         assert current_sa_quantiles.shape == (self.batch_size, self.N, 1)
 
         with torch.no_grad():
@@ -116,16 +134,24 @@ class QRDQNAgent(BaseAgent):
                 self.online_net.sample_noise()
                 next_q = self.online_net.calculate_q(states=next_states)
             else:
-                next_q = self.target_net.calculate_q(states=next_states)
+                if use_morl():
+                    next_q = self.target_net(states=next_states).outputs
+                else:
+                    next_q = self.target_net.calculate_q(states=next_states)
 
             # Calculate greedy actions.
             next_actions = torch.argmax(next_q, dim=1, keepdim=True)
             assert next_actions.shape == (self.batch_size, 1)
 
             # Calculate quantile values of next states and actions at tau_hats.
-            next_sa_quantiles = evaluate_quantile_at_action(
-                self.target_net(states=next_states),
-                next_actions).transpose(1, 2)
+            if use_morl():
+                next_sa_quantiles = evaluate_quantile_at_action(
+                    self.target_net(states=next_states).quantiles,
+                    next_actions).transpose(1, 2)
+            else:
+                next_sa_quantiles = evaluate_quantile_at_action(
+                    self.target_net(states=next_states),
+                    next_actions).transpose(1, 2)
             assert next_sa_quantiles.shape == (self.batch_size, 1, self.N)
 
             # Calculate target quantile values.
