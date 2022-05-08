@@ -91,9 +91,12 @@ class QRDQNAgent(BaseAgent):
                 self.memory.sample(self.batch_size)
             weights = None
 
-        quantile_loss, mean_q, errors = self.calculate_loss(
-            states, actions, rewards, next_states, dones, weights)
-        assert errors.shape == (self.batch_size, 1)
+        if use_morl():
+            quantile_loss, _ = self.morl_learner._compute_loss(tensor_exp)
+        else:
+            quantile_loss, mean_q, errors = self.calculate_loss(
+                states, actions, rewards, next_states, dones, weights)
+            assert errors.shape == (self.batch_size, 1)
 
         update_params(
             self.optim, quantile_loss,
@@ -105,12 +108,6 @@ class QRDQNAgent(BaseAgent):
                 self.morl_memory.update_priorities_(indices, errors)
             else:
                 self.memory.update_priority(errors)
-
-        if 4*self.steps % self.log_interval == 0:
-            self.writer.add_scalar(
-                'loss/quantile_loss', quantile_loss.detach().item(),
-                4*self.steps)
-            self.writer.add_scalar('stats/mean_Q', mean_q, 4*self.steps)
 
     def calculate_loss(self, states, actions, rewards, next_states, dones,
                        weights):

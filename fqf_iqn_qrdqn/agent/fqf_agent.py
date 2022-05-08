@@ -131,23 +131,6 @@ class FQFAgent(BaseAgent):
         if self.use_per:
             self.memory.update_priority(errors)
 
-        if self.learning_steps % self.log_interval == 0:
-            self.writer.add_scalar(
-                'loss/fraction_loss', fraction_loss.detach().item(),
-                4*self.steps)
-            self.writer.add_scalar(
-                'loss/quantile_loss', quantile_loss.detach().item(),
-                4*self.steps)
-            if self.ent_coef > 0.0:
-                self.writer.add_scalar(
-                    'loss/entropy_loss', entropy_loss.detach().item(),
-                    4*self.steps)
-
-            self.writer.add_scalar('stats/mean_Q', mean_q, 4*self.steps)
-            self.writer.add_scalar(
-                'stats/mean_entropy_of_value_distribution',
-                entropies.mean().detach().item(), 4*self.steps)
-
     def calculate_fraction_loss(self, state_embeddings, sa_quantile_hats, taus,
                                 actions, weights):
         assert not state_embeddings.requires_grad

@@ -110,5 +110,5 @@ def set_morl(enable: bool = True) -> None:
     os.environ['MORL_ENABLE'] = str(enable).lower()
 
 
-def use_morl() -> bool:
-    return os.environ.get('MORL_ENABLE', 'false') == 'true'
+def use_morl(enable: bool = True) -> bool:
+    return os.environ.get('MORL_ENABLE', 'false') == 'true' if enable else False

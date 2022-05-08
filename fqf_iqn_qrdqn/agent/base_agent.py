@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 import os
 import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 import tqdm
 
 from fqf_iqn_qrdqn.memory import LazyMultiStepMemory, LazyPrioritizedMultiStepMemory
@@ -70,51 +69,24 @@ class BaseAgent(ABC):
         self.target_net = None
 
         # Replay memory which is memory-efficient to store stacked frames.
-        if use_morl():
-            if use_per:
-                self.morl_memory = memories.PrioNStepAtariExperienceReplay(
-                    batch_size=32,
-                    capacity=memory_size,
-                    frame_stack=4,
-                    state_height=84,
-                    state_width=84,
-                    n=multi_step,
-                )
-            else:
-                self.morl_memory = memories.ExperienceReplay.with_compact_circular_buffer(
-                    capacity=memory_size, batch_size=32, frame_stack=4,
-                )
-            self.morl_learner = learners.QRDQNLearner(
-                model=models.QRDQN.nature_dqn(
-                    state_channels=4,
-                    state_height=84,
-                    state_width=84,
-                    n_actions=6,
-                    n_quantiles=200,
-                    normalize_pixels=False,
-                ),
-                memory=self.morl_memory,
-                update_freq=4,
+        if use_per:
+            beta_steps = (num_steps - start_steps) / update_interval
+            self.memory = LazyPrioritizedMultiStepMemory(
+                memory_size,
+                self.env.observation_space.shape,
+                self.device,
+                gamma,
+                multi_step,
+                beta_steps=beta_steps,
             )
         else:
-            if use_per:
-                beta_steps = (num_steps - start_steps) / update_interval
-                self.memory = LazyPrioritizedMultiStepMemory(
-                    memory_size,
-                    self.env.observation_space.shape,
-                    self.device,
-                    gamma,
-                    multi_step,
-                    beta_steps=beta_steps,
-                )
-            else:
-                self.memory = LazyMultiStepMemory(
-                    memory_size,
-                    self.env.observation_space.shape,
-                    self.device,
-                    gamma,
-                    multi_step,
-                )
+            self.memory = LazyMultiStepMemory(
+                memory_size,
+                self.env.observation_space.shape,
+                self.device,
+                gamma,
+                multi_step,
+            )
 
 
         self.log_dir = log_dir
@@ -125,7 +97,6 @@ class BaseAgent(ABC):
         if not os.path.exists(self.summary_dir):
             os.makedirs(self.summary_dir)
 
-        self.writer = SummaryWriter(log_dir=self.summary_dir)
         self.train_return = RunningMeanStats(log_interval)
 
         self.steps = 0
@@ -278,11 +249,6 @@ class BaseAgent(ABC):
         # We log running mean of stats.
         self.train_return.append(episode_return)
 
-        # We log evaluation results along with training frames = 4 * steps.
-        if self.episodes % self.log_interval == 0:
-            self.writer.add_scalar(
-                "return/train", self.train_return.get(), 4 * self.steps
-            )
 
         print(
             f"Episode: {self.episodes:<4}  "
@@ -317,13 +283,13 @@ class BaseAgent(ABC):
             done = False
             while (not done) and episode_steps <= self.max_episode_steps:
                 if self.is_random(eval=True):
-                    action = self.explore().item()
+                    action = self.explore()
                 else:
                     if use_morl():
                         state = state[None, ...]
-                    action = self.exploit(state).item()
+                    action = self.exploit(state)
 
-                next_state, reward, done, _ = self.test_env.step(action)
+                next_state, reward, done, _ = self.test_env.step(int(action))
                 num_steps += 1
                 pbar.update()
                 episode_steps += 1
@@ -345,7 +311,6 @@ class BaseAgent(ABC):
             self.save_models(os.path.join(self.model_dir, "best"))
 
         # We log evaluation results along with training frames = 4 * steps.
-        self.writer.add_scalar("return/test", mean_return, 4 * self.steps)
         print("-" * 60)
         print(f"Num steps: {self.steps:<5}  " f"return: {mean_return:<5.1f}")
         print("-" * 60)
@@ -353,4 +318,3 @@ class BaseAgent(ABC):
     def __del__(self):
         self.env.close()
         self.test_env.close()
-        self.writer.close()
