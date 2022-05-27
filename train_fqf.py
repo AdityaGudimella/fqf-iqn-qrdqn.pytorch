@@ -7,6 +7,12 @@ from fqf_iqn_qrdqn.env import make_pytorch_env
 from fqf_iqn_qrdqn.agent import FQFAgent
 
 
+from fqf_iqn_qrdqn.utils import set_morl
+
+from morl import environments as envs
+
+set_morl(True)
+
 def run(args):
     with open(args.config) as f:
         config = yaml.load(f, Loader=yaml.SafeLoader)
@@ -22,10 +28,15 @@ def run(args):
     log_dir = os.path.join(
         'logs', args.env_id, f'{name}-seed{args.seed}-{time}')
 
+    morl_env = envs.EnvPool.make_ale_env(
+        game="Pong",
+        n_envs=1,
+        base_seed=args.seed,
+    )
     # Create the agent and run.
     agent = FQFAgent(
         env=env, test_env=test_env, log_dir=log_dir, seed=args.seed,
-        cuda=args.cuda, **config)
+        cuda=args.cuda, morl_env=morl_env, **config)
     agent.run()
 
 

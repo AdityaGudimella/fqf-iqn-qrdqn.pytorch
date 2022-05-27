@@ -1,30 +1,46 @@
+import torch
+
 from .base_model import BaseModel
-from fqf_iqn_qrdqn.network import DQNBase, CosineEmbeddingNetwork,\
-    FractionProposalNetwork, QuantileNetwork
+from fqf_iqn_qrdqn.network import (
+    DQNBase,
+    CosineEmbeddingNetwork,
+    FractionProposalNetwork,
+    QuantileNetwork,
+)
+
+from morl.models import FPNOutputs, FQFOutputs
 
 
 class FQF(BaseModel):
-
-    def __init__(self, num_channels, num_actions, N=32, num_cosines=32,
-                 embedding_dim=7*7*64, dueling_net=False, noisy_net=False,
-                 target=False):
+    def __init__(
+        self,
+        num_channels,
+        num_actions,
+        N=32,
+        num_cosines=32,
+        embedding_dim=7 * 7 * 64,
+        dueling_net=False,
+        noisy_net=False,
+        target=False,
+    ):
         super(FQF, self).__init__()
 
         # Feature extractor of DQN.
         self.dqn_net = DQNBase(num_channels=num_channels)
         # Cosine embedding network.
         self.cosine_net = CosineEmbeddingNetwork(
-            num_cosines=num_cosines, embedding_dim=embedding_dim,
-            noisy_net=noisy_net)
+            num_cosines=num_cosines, embedding_dim=embedding_dim, noisy_net=noisy_net
+        )
         # Quantile network.
         self.quantile_net = QuantileNetwork(
-            num_actions=num_actions, dueling_net=dueling_net,
-            noisy_net=noisy_net)
+            num_actions=num_actions, dueling_net=dueling_net, noisy_net=noisy_net
+        )
 
         # Fraction proposal network.
         if not target:
             self.fraction_net = FractionProposalNetwork(
-                N=N, embedding_dim=embedding_dim)
+                N=N, embedding_dim=embedding_dim
+            )
 
         self.N = N
         self.num_channels = num_channels
@@ -35,11 +51,43 @@ class FQF(BaseModel):
         self.noisy_net = noisy_net
         self.target = target
 
+    def forward(self, states: torch.Tensor, fraction_net=None) -> FQFOutputs:
+        embeddings = self.embeddings(states)
+        taus, tau_hats, _ = self.fractions(
+            state_embeddings=embeddings, fraction_net=fraction_net
+        )
+        quantile_hats = self.quantiles(taus=tau_hats, state_embeddings=embeddings)
+
+        # Calculate expectations of value distribution.
+        # q = ((taus[:, 1:, None] - taus[:, :-1, None]) * quantile_hats).sum(dim=1)
+        # assert q.shape == (batch_size, self.num_actions)
+
+        # return q
+        return FQFOutputs(
+            embeddings=embeddings,
+            quantiles=quantile_hats,
+            taus=taus,
+        )
+
+    def embeddings(self, states: torch.Tensor) -> torch.Tensor:
+        return self.calculate_state_embeddings(states)
+
+    def fractions(self, state_embeddings: torch.Tensor, fraction_net=None) -> FPNOutputs:
+        if fraction_net:
+            return fraction_net(state_embeddings)
+        return self.fraction_net(state_embeddings)
+
+    def quantiles(
+        self, state_embeddings: torch.Tensor, taus: torch.Tensor
+    ) -> torch.Tensor:
+        return self.calculate_quantiles(taus, state_embeddings=state_embeddings)
+
     def calculate_state_embeddings(self, states):
         return self.dqn_net(states)
 
-    def calculate_fractions(self, states=None, state_embeddings=None,
-                            fraction_net=None):
+    def calculate_fractions(
+        self, states=None, state_embeddings=None, fraction_net=None
+    ):
         assert states is not None or state_embeddings is not None
         assert not self.target or fraction_net is not None
 
@@ -60,8 +108,14 @@ class FQF(BaseModel):
         tau_embeddings = self.cosine_net(taus)
         return self.quantile_net(state_embeddings, tau_embeddings)
 
-    def calculate_q(self, taus=None, tau_hats=None, states=None,
-                    state_embeddings=None, fraction_net=None):
+    def calculate_q(
+        self,
+        taus=None,
+        tau_hats=None,
+        states=None,
+        state_embeddings=None,
+        fraction_net=None,
+    ):
         assert states is not None or state_embeddings is not None
         assert not self.target or fraction_net is not None
 
@@ -73,16 +127,17 @@ class FQF(BaseModel):
         # Calculate fractions.
         if taus is None or tau_hats is None:
             taus, tau_hats, _ = self.calculate_fractions(
-                state_embeddings=state_embeddings, fraction_net=fraction_net)
+                state_embeddings=state_embeddings, fraction_net=fraction_net
+            )
 
         # Calculate quantiles.
         quantile_hats = self.calculate_quantiles(
-            tau_hats, state_embeddings=state_embeddings)
+            tau_hats, state_embeddings=state_embeddings
+        )
         assert quantile_hats.shape == (batch_size, self.N, self.num_actions)
 
         # Calculate expectations of value distribution.
-        q = ((taus[:, 1:, None] - taus[:, :-1, None]) * quantile_hats)\
-            .sum(dim=1)
+        q = ((taus[:, 1:, None] - taus[:, :-1, None]) * quantile_hats).sum(dim=1)
         assert q.shape == (batch_size, self.num_actions)
 
         return q

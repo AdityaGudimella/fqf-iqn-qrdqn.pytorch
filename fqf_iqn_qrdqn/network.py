@@ -4,6 +4,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from morl.models import FPNOutputs
+
 
 def initialize_weights_xavier(m, gain=1.0):
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
@@ -63,7 +65,7 @@ class FractionProposalNetwork(nn.Module):
         self.N = N
         self.embedding_dim = embedding_dim
 
-    def forward(self, state_embeddings):
+    def forward(self, state_embeddings) -> FPNOutputs:
 
         batch_size = state_embeddings.shape[0]
 
@@ -89,7 +91,8 @@ class FractionProposalNetwork(nn.Module):
         entropies = -(log_probs * probs).sum(dim=-1, keepdim=True)
         assert entropies.shape == (batch_size, 1)
 
-        return taus, tau_hats, entropies
+        # return taus, tau_hats, entropies
+        return FPNOutputs(taus, tau_hats, entropies)
 
 
 class CosineEmbeddingNetwork(nn.Module):

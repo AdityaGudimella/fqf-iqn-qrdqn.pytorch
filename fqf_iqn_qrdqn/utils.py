@@ -3,6 +3,10 @@ from collections import deque
 import numpy as np
 import torch
 
+from morl import core
+from morl import external_utils as extu
+from morl import initialize
+
 
 def update_params(optim, loss, networks, retain_graph=False,
                   grad_cliping=None):
@@ -104,6 +108,11 @@ class LinearAnneaer:
     def get(self):
         assert 0 < self.steps <= self.num_steps
         return self.a * self.steps + self.b
+
+
+initialize.initialize_morl()
+extu.manual_seed_morl(0)
+core.set_default_torch_device("cuda")
 
 
 def set_morl(enable: bool = True) -> None:
